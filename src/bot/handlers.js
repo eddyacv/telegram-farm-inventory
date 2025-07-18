@@ -1,12 +1,40 @@
-// src/bot/handlers.js
 const productList = ['Pollo', 'Roja', 'Gallo', 'Doble'];
 const userSessions = {};
+const { appendProductRows } = require('../services/sheetsService');
+const { isAuthorized, registerUser } = require('../utils/auth');
 
-function handleMessage(bot, msg) {
+async function handleMessage(bot, msg) {
   const chatId = msg.chat.id;
   const text = msg.text.trim();
   const userId = msg.from.id;
 
+  // 👤 Comando para mostrar ID
+  if (text === '/id') {
+    const nombre = `${msg.from.first_name} ${msg.from.last_name || ''}`.trim();
+    bot.sendMessage(chatId, `🆔 Tu ID de Telegram es: *${userId}*\n👤 Nombre: *${nombre}*`, {
+      parse_mode: 'Markdown'
+    });
+    return;
+  }
+
+  // 🔐 Registro de usuarios con clave secreta
+  if (text.startsWith('/registrar ')) {
+    const [, clave] = text.split(' ');
+    if (registerUser(userId, clave)) {
+      bot.sendMessage(chatId, '✅ ¡Registro exitoso! Ya puedes usar el bot.');
+    } else {
+      bot.sendMessage(chatId, '❌ Clave incorrecta. No tienes permiso para registrarte.');
+    }
+    return;
+  }
+
+  // 🚫 Verificación de autorización
+  if (!isAuthorized(userId)) {
+    bot.sendMessage(chatId, '🚫 No estás autorizado para usar este bot.\n\nSi tienes una clave, regístrate con:\n/registrar TU_CLAVE');
+    return;
+  }
+
+  // Inicializar sesión si no existe
   if (!userSessions[chatId]) {
     userSessions[chatId] = {
       step: 'init',
@@ -17,6 +45,7 @@ function handleMessage(bot, msg) {
 
   const session = userSessions[chatId];
 
+  // 🔁 Reinicio del bot
   if (text.toLowerCase() === '/start' || text === '⬅️ Atrás') {
     if (session.step !== 'init' && Object.values(session.productos).some(v => v > 0)) {
       bot.sendMessage(chatId, '🔄 ¿Estás seguro de que deseas volver al inicio?\n\nSe perderán los datos que has ingresado.', {
@@ -42,6 +71,7 @@ function handleMessage(bot, msg) {
     return;
   }
 
+  // Confirmación de reinicio
   if (session.step === 'confirm_reset') {
     if (text === 'Sí') {
       session.step = 'init';
@@ -61,6 +91,7 @@ function handleMessage(bot, msg) {
     return;
   }
 
+  // Selección de tipo
   if (text === 'Entrada' || text === 'Salida') {
     session.tipo = text;
     session.step = 'selecting';
@@ -69,17 +100,25 @@ function handleMessage(bot, msg) {
     return;
   }
 
+  // Finalizar y guardar
   if (text === 'Terminar') {
     const productosValidos = Object.entries(session.productos).filter(([_, val]) => val > 0);
+
     if (productosValidos.length === 0) {
       bot.sendMessage(chatId, '⚠️ Para registrar la operación, necesitas haber asignado al menos una cantidad mayor a 0.');
       return;
     }
 
     const resumen = productosValidos.map(([k, v]) => `${k}: ${v}`).join('\n');
-    const fecha = new Date().toLocaleString();
+    const fecha = new Date().toLocaleString('es-PE', { timeZone: 'America/Lima' });
 
-    bot.sendMessage(chatId, `🗓️ *Registro guardado correctamente:*\n\n📅 Fecha: ${fecha}\n📦 Tipo: ${session.tipo}\n\n${resumen}`, {
+    await appendProductRows({
+      tipo: session.tipo,
+      productos: session.productos,
+      userId,
+    });
+
+    bot.sendMessage(chatId, `✅ *Registro guardado correctamente:*\n\n📅 Fecha: ${fecha}\n📦 Tipo: ${session.tipo}\n\n${resumen}`, {
       parse_mode: 'Markdown'
     });
 
@@ -97,7 +136,7 @@ function handleMessage(bot, msg) {
     return;
   }
 
-  // Entrada del tipo "Producto Cantidad"
+  // Entrada de datos: "Producto Cantidad"
   const parts = text.split(' ');
   if (parts.length === 2) {
     const [producto, cantidadStr] = parts;
@@ -114,17 +153,22 @@ function handleMessage(bot, msg) {
     return;
   }
 
+  // Mensaje por defecto
   bot.sendMessage(chatId, '😕 No entendí eso.\n\nPor favor selecciona una opción válida del menú o ingresa un producto correctamente.');
 }
 
+// ✅ Mostrar lista actual
 function showCurrentList(bot, chatId, session) {
-  const resumen = productList.map(p => `${p}: ${session.productos[p]}`).join('\n');
-  bot.sendMessage(chatId, `📋 *Estado actual de ${session.tipo}:*\n\n${resumen}`, {
+  const lista = Object.entries(session.productos)
+    .map(([producto, cantidad]) => `- ${producto}: ${cantidad}`)
+    .join('\n');
+
+  bot.sendMessage(chatId, `📝 *${session.tipo} actual:*\n\n${lista}\n\n✏️ Puedes escribir por ejemplo: Pollo 10\n✅ Cuando termines, pulsa: *Terminar*`, {
     parse_mode: 'Markdown',
     reply_markup: {
-      keyboard: [['Terminar'], ['⬅️ Atrás']],
+      keyboard: [['⬅️ Atrás', 'Terminar']],
       resize_keyboard: true,
-      one_time_keyboard: true
+      one_time_keyboard: false
     }
   });
 }
